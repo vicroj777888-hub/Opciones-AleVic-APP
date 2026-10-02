@@ -1,6 +1,6 @@
 # ==========================================
 # RADAR DE FRANCOTIRADOR - DSS TRADING
-# app.py - VERSION v10 (v8 integra + fusion anti-borrado + validacion manual + estadisticas)
+# app.py - VERSION v11 (persistencia de informe IA)
 # MODO SIMULACION - NO SE ENVIAN ORDENES REALES
 # Repo unico: radar-trading-automation
 # ==========================================
@@ -38,7 +38,7 @@ MAX_INVERSION = 30.0
 MAX_ABIERTAS = 5
 META_GAIN = 2.0
 COMISION = 0.0
-MODELOS = ['gemini-3.6-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-flash-latest']
+MODELOS = ['gemini-flash-latest', 'gemini-3.6-flash']
 
 SCAN_TIMES = [(9, 31), (10, 1), (11, 1), (12, 1), (13, 1), (14, 1), (15, 1), (15, 31), (15, 58)]
 
@@ -65,6 +65,10 @@ if 'aviso_listo' not in st.session_state:
     st.session_state['aviso_listo'] = False
 if 'auto_dispatch_hecho' not in st.session_state:
     st.session_state['auto_dispatch_hecho'] = ''
+if 'generar_informe' not in st.session_state:
+    st.session_state['generar_informe'] = False
+if 'informe_mostrar' not in st.session_state:
+    st.session_state['informe_mostrar'] = None
 
 # ==========================================
 # CONEXIONES CON DIAGNOSTICO VISIBLE
@@ -153,7 +157,6 @@ def fusionar_filas(existentes, nuevas):
     return orden
 
 def escribir_sim(ws, filas):
-    """Relee la hoja, fusiona por clave y escribe. A prueba de borrados."""
     for intento in (1, 2, 3):
         try:
             existentes = leer_sim(ws)
@@ -228,7 +231,6 @@ def gan_pct_viva(row):
     return 0.0
 
 def validar_horario_manual(estrategia, ahora):
-    """Mismas reglas que main.py: PVR 10:00-10:05; Hanger/Primer Gap 15:55+; resto 11:00-16:00."""
     h = ahora.hour
     m = ahora.minute
     if ahora.weekday() > 4:
@@ -285,7 +287,7 @@ def calcular_estadisticas(cerradas):
     return stats
 
 # ==========================================
-# GEMINI: INFORME CON DIAGNOSTICO Y REINTENTOS
+# GEMINI: INFORME CON PERSISTENCIA
 # ==========================================
 
 def limpiar_json(txt):
@@ -303,10 +305,10 @@ def sanear(txt, key):
         out = out.replace(key, '***')
     return out[:300]
 
-def informe_gemini(cerradas, lecciones_previas, key):
-    diag = []
+def informe_gemini_un_modelo(cerradas, lecciones_previas, key, modelo):
+    """Llama a UN solo modelo con UN reintento. Devuelve resultado parcial."""
     if not key:
-        return {'ok': False, 'motivo': 'Falta GEMINI_API_KEY en Secrets de Streamlit', 'diagnosticos': diag, 'datos': None}
+        return {'ok': False, 'motivo': 'Falta GEMINI_API_KEY', 'datos': None}
 
     lineas = []
     for f in cerradas:
@@ -323,13 +325,13 @@ def informe_gemini(cerradas, lecciones_previas, key):
             'bid_max ' + str(f.get('Max Bid')),
             'gan$ ' + str(f.get('Ganancia $')),
             'gan% ' + str(f.get('Ganancia %')),
-            'motivo_cierre ' + str(f.get('Notas', '')),
+            'motivo_cierre ' + str(f.get('Notas', ''))[:200],
             'estado ' + str(f.get('Estado', '')),
         ]
         lineas.append(' | '.join(partes))
 
     prompt = "GUIA OFICIAL DEL METODO CARDONA:\n" + GUIA_CARDONA + "\n\n"
-    prompt += "OPERACIONES CERRADAS DEL PAPER TRADING (todos los campos disponibles):\n" + "\n".join(lineas) + "\n\n"
+    prompt += "OPERACIONES CERRADAS DEL PAPER TRADING:\n" + "\n".join(lineas) + "\n\n"
     prompt += "LECCIONES DE SEMANAS ANTERIORES:\n" + (lecciones_previas or 'ninguna aun') + "\n\n"
     prompt += """Analiza CADA operacion y el conjunto contra la GUIA. Determina:
 - que estrategias funcionaron y cuales fallaron;
@@ -353,47 +355,69 @@ Responde UNICAMENTE con este JSON valido, en espanol:
  "verificar_antes_de_repetir": ["..."]
 }"""
 
-    for modelo in MODELOS:
-        url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelo + ':generateContent?key=' + key
-        body = {
-            'contents': [{'parts': [{'text': prompt}]}],
-            'generationConfig': {'temperature': 0.4, 'responseMimeType': 'application/json'}
-        }
-        for intento in (1, 2):
-            try:
-                r = requests.post(url, json=body, timeout=90)
-            except Exception as e:
-                diag.append(modelo + ': error de red ' + type(e).__name__ + ' ' + sanear(e, key))
-                break
-            if r.status_code in (429, 503):
-                diag.append(modelo + ': HTTP ' + str(r.status_code) + ' saturacion/limite, reintento ' + str(intento))
-                time.sleep(30 if intento == 1 else 60)
-                continue
-            if r.status_code in (400, 401, 403):
-                diag.append(modelo + ': HTTP ' + str(r.status_code) + ' (clave invalida o sin permiso) ' + sanear(r.text, key))
-                break
-            if r.status_code != 200:
-                diag.append(modelo + ': HTTP ' + str(r.status_code) + ' ' + sanear(r.text, key))
-                break
-            try:
-                txt = r.json()['candidates'][0]['content']['parts'][0]['text']
-            except Exception as e:
-                diag.append(modelo + ': respuesta sin contenido util (' + type(e).__name__ + ')')
-                break
-            try:
-                ia = json.loads(limpiar_json(txt))
-            except Exception as e:
-                diag.append(modelo + ': JSON invalido (' + type(e).__name__ + ') inicio: ' + sanear(limpiar_json(txt)[:200], key))
-                break
-            faltan = [k for k in ('resumen', 'win_rate_por_estrategia', 'reglas_violadas', 'lecciones', 'recomendaciones') if k not in ia]
-            if faltan:
-                diag.append(modelo + ': JSON sin claves obligatorias: ' + ', '.join(faltan))
-                break
-            return {'ok': True, 'motivo': '', 'diagnosticos': diag, 'datos': ia}
-        time.sleep(2)
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelo + ':generateContent?key=' + key
+    body = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {'temperature': 0.4, 'responseMimeType': 'application/json'}
+    }
+    
+    try:
+        r = requests.post(url, json=body, timeout=120)
+    except Exception as e:
+        return {'ok': False, 'motivo': 'Error de red: ' + type(e).__name__, 'datos': None}
+    
+    if r.status_code in (429, 503):
+        ahora_ny = datetime.now(ZONA_NY)
+        sugerencia = "Intenta antes de las 9:00 a.m. NY o el sábado en la mañana."
+        return {'ok': False, 'motivo': f'HTTP {r.status_code} (saturación). {sugerencia}', 'datos': None}
+    
+    if r.status_code in (400, 401, 403):
+        return {'ok': False, 'motivo': f'HTTP {r.status_code} (clave inválida)', 'datos': None}
+    
+    if r.status_code != 200:
+        return {'ok': False, 'motivo': f'HTTP {r.status_code}', 'datos': None}
+    
+    try:
+        txt = r.json()['candidates'][0]['content']['parts'][0]['text']
+    except Exception as e:
+        return {'ok': False, 'motivo': 'Respuesta sin contenido útil', 'datos': None}
+    
+    try:
+        ia = json.loads(limpiar_json(txt))
+    except Exception as e:
+        return {'ok': False, 'motivo': 'JSON inválido', 'datos': None}
+    
+    faltan = [k for k in ('resumen', 'win_rate_por_estrategia', 'reglas_violadas', 'lecciones', 'recomendaciones') if k not in ia]
+    if faltan:
+        return {'ok': False, 'motivo': 'JSON sin claves obligatorias: ' + ', '.join(faltan), 'datos': None}
+    
+    return {'ok': True, 'motivo': '', 'datos': ia}
 
-    motivo = ('Gemini fallo en todos los modelos. ' + ' || '.join(diag)) if diag else 'Gemini fallo en todos los modelos.'
-    return {'ok': False, 'motivo': motivo, 'diagnosticos': diag, 'datos': None}
+def obtener_ultimo_informe_semana(ws_ia):
+    """Busca el informe más reciente de esta semana en INFORME_IA."""
+    if ws_ia is None:
+        return None
+    try:
+        registros = ws_ia.get_all_records()
+        if not registros:
+            return None
+        ahora = datetime.now(ZONA_NY)
+        inicio_semana = ahora - timedelta(days=ahora.weekday())
+        inicio_semana = inicio_semana.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        for r in reversed(registros):
+            fecha_str = str(r.get('Fecha', ''))
+            if not fecha_str or 'FALLIDO' in str(r.get('Resumen', '')):
+                continue
+            try:
+                fecha_r = datetime.strptime(fecha_str, '%Y-%m-%d %H:%M')
+                if fecha_r >= inicio_semana:
+                    return r
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
 
 # ==========================================
 # CARGA DE DATOS DEL RADAR
@@ -1080,7 +1104,7 @@ else:
 st.divider()
 
 # ==========================================
-# HISTORIAL + INFORME SEMANAL IA
+# HISTORIAL + INFORME SEMANAL IA (v11: persistencia)
 # ==========================================
 
 st.subheader("Historial de operaciones (SIMULADOR)")
@@ -1092,62 +1116,103 @@ else:
     st.caption("Aun no hay operaciones cerradas.")
 
 st.subheader("Informe semanal de la IA (aprendizaje con la GUIA)")
+
+ws_ia = abrir_informe_ia(sh_sim) if sh_sim else None
+
+# Botón para generar nuevo informe
 if st.button("Generar informe semanal con IA"):
     if not cerradas:
         st.info("Aun no hay operaciones cerradas para analizar.")
     else:
-        with st.spinner("Gemini analizando el historial contra la GUIA..."):
-            ws_ia = abrir_informe_ia(sh_sim)
-            lecciones_previas = ''
-            if ws_ia is not None:
-                try:
-                    regs = ws_ia.get_all_records()
-                    lecciones_previas = " | ".join([str(x.get('Lecciones', '')) for x in regs if x.get('Lecciones')][-5:])
-                except Exception:
-                    lecciones_previas = ''
-            res = informe_gemini(cerradas, lecciones_previas, KEY_G)
-        if res['ok']:
-            ia = res['datos']
-            st.markdown("**Resumen:** " + str(ia.get('resumen', '')))
-            st.markdown("**Win rate por estrategia:**")
-            st.json(ia.get('win_rate_por_estrategia', {}))
-            secciones = [
-                ("Reglas de la GUIA violadas", 'reglas_violadas'),
-                ("Entradas correctas", 'entradas_correctas'),
-                ("Salidas correctas", 'salidas_correctas'),
-                ("Vencimientos sin valor", 'vencimientos_sin_valor'),
-                ("Verificar antes de repetir", 'verificar_antes_de_repetir'),
-                ("Lecciones (memoria del sistema)", 'lecciones'),
-                ("Recomendaciones para revision humana", 'recomendaciones'),
-            ]
-            for titulo, clave in secciones:
-                items = ia.get(clave, [])
-                if items:
-                    st.markdown("**" + titulo + ":**")
-                    for e in items:
-                        st.markdown("- " + str(e))
-            if ws_ia is not None:
-                try:
-                    ws_ia.append_row([
-                        datetime.now(ZONA_NY).strftime('%Y-%m-%d %H:%M'),
-                        str(ia.get('resumen', '')),
-                        " | ".join([str(x) for x in ia.get('lecciones', [])]),
-                        " | ".join([str(x) for x in ia.get('recomendaciones', [])])
-                    ])
-                    st.caption("Informe guardado en INFORME_IA (solo se agrega; nada se borra).")
-                except Exception as e:
-                    st.warning("No se pudo guardar el informe en el Sheet: " + str(e))
-        else:
-            st.error("El informe fallo: " + res['motivo'])
-            for d in res['diagnosticos']:
-                st.caption(d)
-            if ws_ia is not None:
-                try:
-                    ws_ia.append_row([
-                        datetime.now(ZONA_NY).strftime('%Y-%m-%d %H:%M'),
-                        'INFORME FALLIDO: ' + res['motivo'][:400],
-                        '', ''
-                    ])
-                    st.caption("Fallo registrado en INFORME_IA; los informes anteriores quedan intactos.")
-                except Exception:
-                    pass
+        st.session_state['generar_informe'] = True
+        st.session_state['informe_mostrar'] = None
+        st.rerun()
+
+# Procesamiento persistente del informe
+if st.session_state.get('generar_informe'):
+    with st.spinner("Gemini analizando el historial contra la GUIA..."):
+        lecciones_previas = ''
+        if ws_ia is not None:
+            try:
+                regs = ws_ia.get_all_records()
+                lecciones_previas = " | ".join([str(x.get('Lecciones', '')) for x in regs if x.get('Lecciones')][-5:])
+            except Exception:
+                lecciones_previas = ''
+        
+        modelo = MODELOS[0]
+        res = informe_gemini_un_modelo(cerradas, lecciones_previas, KEY_G, modelo)
+    
+    if res['ok']:
+        ia = res['datos']
+        st.session_state['informe_mostrar'] = ia
+        st.session_state['generar_informe'] = False
+        
+        if ws_ia is not None:
+            try:
+                ws_ia.append_row([
+                    datetime.now(ZONA_NY).strftime('%Y-%m-%d %H:%M'),
+                    str(ia.get('resumen', '')),
+                    " | ".join([str(x) for x in ia.get('lecciones', [])]),
+                    " | ".join([str(x) for x in ia.get('recomendaciones', [])])
+                ])
+                st.caption("Informe guardado en INFORME_IA (solo se agrega; nada se borra).")
+            except Exception as e:
+                st.warning("No se pudo guardar el informe en el Sheet: " + str(e))
+        
+        st.rerun()
+    else:
+        st.error("El informe fallo: " + res['motivo'])
+        st.session_state['generar_informe'] = False
+        
+        if ws_ia is not None:
+            try:
+                ws_ia.append_row([
+                    datetime.now(ZONA_NY).strftime('%Y-%m-%d %H:%M'),
+                    'INFORME FALLIDO: ' + res['motivo'][:400],
+                    '', ''
+                ])
+                st.caption("Fallo registrado en INFORME_IA; los informes anteriores quedan intactos.")
+            except Exception:
+                pass
+
+# Mostrar informe desde session_state
+if st.session_state.get('informe_mostrar'):
+    ia = st.session_state['informe_mostrar']
+    st.markdown("**Resumen:** " + str(ia.get('resumen', '')))
+    st.markdown("**Win rate por estrategia:**")
+    st.json(ia.get('win_rate_por_estrategia', {}))
+    secciones = [
+        ("Reglas de la GUIA violadas", 'reglas_violadas'),
+        ("Entradas correctas", 'entradas_correctas'),
+        ("Salidas correctas", 'salidas_correctas'),
+        ("Vencimientos sin valor", 'vencimientos_sin_valor'),
+        ("Verificar antes de repetir", 'verificar_antes_de_repetir'),
+        ("Lecciones (memoria del sistema)", 'lecciones'),
+        ("Recomendaciones para revision humana", 'recomendaciones'),
+    ]
+    for titulo, clave in secciones:
+        items = ia.get(clave, [])
+        if items:
+            st.markdown("**" + titulo + ":**")
+            for e in items:
+                st.markdown("- " + str(e))
+
+# Mostrar informe de esta semana desde Sheet (caché)
+if not st.session_state.get('informe_mostrar') and not st.session_state.get('generar_informe'):
+    ultimo = obtener_ultimo_informe_semana(ws_ia)
+    if ultimo:
+        st.info("Mostrando informe de esta semana (del Sheet).")
+        st.markdown("**Fecha:** " + str(ultimo.get('Fecha', '')))
+        st.markdown("**Resumen:** " + str(ultimo.get('Resumen', '')))
+        lecciones = str(ultimo.get('Lecciones', ''))
+        recomendaciones = str(ultimo.get('Recomendaciones', ''))
+        if lecciones:
+            st.markdown("**Lecciones:**")
+            for lec in lecciones.split(' | '):
+                if lec.strip():
+                    st.markdown("- " + lec.strip())
+        if recomendaciones:
+            st.markdown("**Recomendaciones:**")
+            for rec in recomendaciones.split(' | '):
+                if rec.strip():
+                    st.markdown("- " + rec.strip())
