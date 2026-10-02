@@ -1,9 +1,8 @@
 # ==========================================
-# METODO CARDONA - main.py v18
+# METODO CARDONA - main.py v18-AleVic
 # MODO SIMULACION - NO SE ENVIAN ORDENES REALES
-# Cierre de viernes a las 15:58 (fin de sesion Cardona)
-# Escritura del SIMULADOR por fusion (nunca borra filas)
-# Repo unico: radar-trading-automation
+# CLON GUIA: 4 empresas (F, NFLX, VALE, BAC)
+# Repo: Opciones-AleVic-APP
 # ==========================================
 
 import yfinance as yf
@@ -18,7 +17,7 @@ import time
 import requests
 from zoneinfo import ZoneInfo
 
-VERSION = 'v18'
+VERSION = 'v18-AleVic'
 NY_TZ = ZoneInfo('America/New_York')
 
 SCOPES = [
@@ -35,8 +34,8 @@ def conectar_sheets():
     creds = Credentials.from_service_account_info(credentials_info, scopes=SCOPES)
     gc = gspread.authorize(creds)
 
-SPREADSHEET_ID = '17cu_GUSQl5CWR1UXONrLPyaKD-0l0OdlwWMmg_e-G0U'
-TICKERS = ['SPY', 'F', 'T', 'PFE', 'VALE', 'AAL', 'BAC', 'USO', 'SOFI', 'CCL', 'NFLX']
+SPREADSHEET_ID = '1DCHF9AKSPRoc1lCefzCZE3-izRthmaxf2Bg3JcPHK80'
+TICKERS = ['F', 'NFLX', 'VALE', 'BAC']
 
 MAX_INVERSION = 30.0
 MAX_ABIERTAS = 5
@@ -47,7 +46,6 @@ MIN_ASK = 0.05
 MULTIPLICADOR = 100.0
 MODELOS = ['gemini-3.6-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-flash-latest']
 
-# Cierre obligatorio del viernes (Alineado al escaneo final de las 15:58)
 HORA_CIERRE_VIERNES = int(os.environ.get('HORA_CIERRE_VIERNES', '15'))
 MINUTO_CIERRE_VIERNES = int(os.environ.get('MINUTO_CIERRE_VIERNES', '58'))
 
@@ -466,7 +464,6 @@ def cerrar_si_vencida(row, ahora):
     return True
 
 def decidir_venta(tag, lado, bid_usar, compra, maxbid, limit, hoy, fprog, ahora, ia_vender):
-    """v18: cierre de viernes a las 15:58. Devuelve (cerrar, nota)."""
     momento_cierre = (ahora.hour, ahora.minute) >= (HORA_CIERRE_VIERNES, MINUTO_CIERRE_VIERNES)
     if 'corredor' in tag:
         if compra > 0 and maxbid >= compra * 3.0 and bid_usar <= compra * 2.0 and bid_usar >= compra:
@@ -679,7 +676,6 @@ def clave_fila(f):
             str(f.get('Precio Limit', '')))
 
 def fusionar_filas(existentes, nuevas):
-    """Union por clave: actualiza coincidentes, agrega nuevas, NUNCA borra."""
     mapa = {}
     for f in existentes:
         mapa[clave_fila(f)] = f
@@ -698,7 +694,6 @@ def fusionar_filas(existentes, nuevas):
     return orden
 
 def escribir_simulador_seguro(ws, filas_propuestas):
-    """Relee la hoja, fusiona por clave y escribe. A prueba de borrados."""
     for intento in (1, 2, 3):
         try:
             existentes = leer_simulador(ws)
@@ -769,7 +764,7 @@ def main():
         if r is not None:
             resultados.append(r)
 
-        # ============ VENTAS (v18: cero cierres con perdida, cierre viernes 15:58) ============
+        # ============ VENTAS ============
         for f in filas:
             if str(f.get('Estado', '')) != 'ABIERTA' or str(f.get('Simbolo', '')) != ticker:
                 continue
@@ -812,7 +807,6 @@ def main():
                 print("VENTA FOMC ganancia: " + ticker)
                 continue
 
-            # Puerta 1: SOLO ALERTA registrada, nunca vende (Regla 3 y 1.a.viii)
             if 'corredor' in tag:
                 reversion = False
                 if r is not None:
@@ -824,7 +818,6 @@ def main():
                     f['Notas'] = str(f.get('Notas', '')) + ' | alerta reversion: ' + ahora.strftime('%Y-%m-%d %H:%M')
                     print("ALERTA REVERSION (no se vende, Regla 3): " + ticker)
 
-            # Puerta 3: IA solo con precio fresco; guard anti-stop-loss en codigo
             ia_vender, razon = (None, '')
             if 'corredor' in tag and chain is not None and bid > 0 and ahora.hour >= 15 and key_gemini:
                 ia_vender, razon = revision_ia(f, key_gemini)
