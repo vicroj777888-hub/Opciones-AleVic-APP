@@ -1,8 +1,8 @@
 # ==========================================
-# RADAR DE FRANCOTIRADOR - DSS TRADING
-# app.py - VERSION v11 (persistencia de informe IA)
+# RADAR ALEVIC 4 - GUIA RAPIDA (F · NFLX · VALE · BAC)
+# app.py - VERSION v11-AleVic (persistencia de informe IA)
 # MODO SIMULACION - NO SE ENVIAN ORDENES REALES
-# Repo unico: radar-trading-automation
+# Repo: Opciones-AleVic-APP
 # ==========================================
 
 import streamlit as st
@@ -26,13 +26,13 @@ ALTA = "\u25B2"
 BAJA = "\u25BC"
 NEU = "\u25CF"
 
-st.set_page_config(page_title="Radar DSS Trading", layout="wide")
+st.set_page_config(page_title="Radar AleVic 4", layout="wide")
 st_autorefresh(interval=300000, key="autorefresh_global")
 
-SPREADSHEET_ID = '17cu_GUSQl5CWR1UXONrLPyaKD-0l0OdlwWMmg_e-G0U'
+SPREADSHEET_ID = '1DCHF9AKSPRoc1lCefzCZE3-izRthmaxf2Bg3JcPHK80'
 URL_CSV = 'https://docs.google.com/spreadsheets/d/' + SPREADSHEET_ID + '/export?format=csv&gid=0'
 ZONA_NY = ZoneInfo('America/New_York')
-REPO = 'vicroj777888-hub/radar-trading-automation'
+REPO = 'vicroj777888-hub/Opciones-AleVic-APP'
 
 MAX_INVERSION = 30.0
 MAX_ABIERTAS = 5
@@ -306,7 +306,6 @@ def sanear(txt, key):
     return out[:300]
 
 def informe_gemini_un_modelo(cerradas, lecciones_previas, key, modelo):
-    """Llama a UN solo modelo con UN reintento. Devuelve resultado parcial."""
     if not key:
         return {'ok': False, 'motivo': 'Falta GEMINI_API_KEY', 'datos': None}
 
@@ -360,41 +359,36 @@ Responde UNICAMENTE con este JSON valido, en espanol:
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {'temperature': 0.4, 'responseMimeType': 'application/json'}
     }
-    
+
     try:
         r = requests.post(url, json=body, timeout=120)
     except Exception as e:
         return {'ok': False, 'motivo': 'Error de red: ' + type(e).__name__, 'datos': None}
-    
+
     if r.status_code in (429, 503):
-        ahora_ny = datetime.now(ZONA_NY)
-        sugerencia = "Intenta antes de las 9:00 a.m. NY o el sábado en la mañana."
-        return {'ok': False, 'motivo': f'HTTP {r.status_code} (saturación). {sugerencia}', 'datos': None}
-    
+        return {'ok': False, 'motivo': 'HTTP ' + str(r.status_code) + ' (saturacion). Intenta antes de las 9:00 a.m. NY o el sabado.', 'datos': None}
     if r.status_code in (400, 401, 403):
-        return {'ok': False, 'motivo': f'HTTP {r.status_code} (clave inválida)', 'datos': None}
-    
+        return {'ok': False, 'motivo': 'HTTP ' + str(r.status_code) + ' (clave invalida)', 'datos': None}
     if r.status_code != 200:
-        return {'ok': False, 'motivo': f'HTTP {r.status_code}', 'datos': None}
-    
+        return {'ok': False, 'motivo': 'HTTP ' + str(r.status_code), 'datos': None}
+
     try:
         txt = r.json()['candidates'][0]['content']['parts'][0]['text']
-    except Exception as e:
-        return {'ok': False, 'motivo': 'Respuesta sin contenido útil', 'datos': None}
-    
+    except Exception:
+        return {'ok': False, 'motivo': 'Respuesta sin contenido util', 'datos': None}
+
     try:
         ia = json.loads(limpiar_json(txt))
-    except Exception as e:
-        return {'ok': False, 'motivo': 'JSON inválido', 'datos': None}
-    
+    except Exception:
+        return {'ok': False, 'motivo': 'JSON invalido', 'datos': None}
+
     faltan = [k for k in ('resumen', 'win_rate_por_estrategia', 'reglas_violadas', 'lecciones', 'recomendaciones') if k not in ia]
     if faltan:
         return {'ok': False, 'motivo': 'JSON sin claves obligatorias: ' + ', '.join(faltan), 'datos': None}
-    
+
     return {'ok': True, 'motivo': '', 'datos': ia}
 
 def obtener_ultimo_informe_semana(ws_ia):
-    """Busca el informe más reciente de esta semana en INFORME_IA."""
     if ws_ia is None:
         return None
     try:
@@ -404,7 +398,6 @@ def obtener_ultimo_informe_semana(ws_ia):
         ahora = datetime.now(ZONA_NY)
         inicio_semana = ahora - timedelta(days=ahora.weekday())
         inicio_semana = inicio_semana.replace(hour=0, minute=0, second=0, microsecond=0)
-        
         for r in reversed(registros):
             fecha_str = str(r.get('Fecha', ''))
             if not fecha_str or 'FALLIDO' in str(r.get('Resumen', '')):
@@ -643,7 +636,7 @@ def requisitos_cardona(df1h, df1d):
 # INTERFAZ PRINCIPAL
 # ==========================================
 
-st.title("RADAR DE FRANCOTIRADOR - DSS TRADING")
+st.title("RADAR ALEVIC 4 - GUIA RAPIDA (F · NFLX · VALE · BAC)")
 
 GC = conectar_sheet()
 KEY_G = obtener_key_gemini()
@@ -1104,7 +1097,7 @@ else:
 st.divider()
 
 # ==========================================
-# HISTORIAL + INFORME SEMANAL IA (v11: persistencia)
+# HISTORIAL + INFORME SEMANAL IA (persistente)
 # ==========================================
 
 st.subheader("Historial de operaciones (SIMULADOR)")
@@ -1119,7 +1112,6 @@ st.subheader("Informe semanal de la IA (aprendizaje con la GUIA)")
 
 ws_ia = abrir_informe_ia(sh_sim) if sh_sim else None
 
-# Botón para generar nuevo informe
 if st.button("Generar informe semanal con IA"):
     if not cerradas:
         st.info("Aun no hay operaciones cerradas para analizar.")
@@ -1128,7 +1120,6 @@ if st.button("Generar informe semanal con IA"):
         st.session_state['informe_mostrar'] = None
         st.rerun()
 
-# Procesamiento persistente del informe
 if st.session_state.get('generar_informe'):
     with st.spinner("Gemini analizando el historial contra la GUIA..."):
         lecciones_previas = ''
@@ -1138,15 +1129,13 @@ if st.session_state.get('generar_informe'):
                 lecciones_previas = " | ".join([str(x.get('Lecciones', '')) for x in regs if x.get('Lecciones')][-5:])
             except Exception:
                 lecciones_previas = ''
-        
         modelo = MODELOS[0]
         res = informe_gemini_un_modelo(cerradas, lecciones_previas, KEY_G, modelo)
-    
+
     if res['ok']:
         ia = res['datos']
         st.session_state['informe_mostrar'] = ia
         st.session_state['generar_informe'] = False
-        
         if ws_ia is not None:
             try:
                 ws_ia.append_row([
@@ -1158,12 +1147,10 @@ if st.session_state.get('generar_informe'):
                 st.caption("Informe guardado en INFORME_IA (solo se agrega; nada se borra).")
             except Exception as e:
                 st.warning("No se pudo guardar el informe en el Sheet: " + str(e))
-        
         st.rerun()
     else:
         st.error("El informe fallo: " + res['motivo'])
         st.session_state['generar_informe'] = False
-        
         if ws_ia is not None:
             try:
                 ws_ia.append_row([
@@ -1175,7 +1162,6 @@ if st.session_state.get('generar_informe'):
             except Exception:
                 pass
 
-# Mostrar informe desde session_state
 if st.session_state.get('informe_mostrar'):
     ia = st.session_state['informe_mostrar']
     st.markdown("**Resumen:** " + str(ia.get('resumen', '')))
@@ -1197,7 +1183,6 @@ if st.session_state.get('informe_mostrar'):
             for e in items:
                 st.markdown("- " + str(e))
 
-# Mostrar informe de esta semana desde Sheet (caché)
 if not st.session_state.get('informe_mostrar') and not st.session_state.get('generar_informe'):
     ultimo = obtener_ultimo_informe_semana(ws_ia)
     if ultimo:
