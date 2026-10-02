@@ -1,4 +1,4 @@
-name: Actualizar Radar Trading
+name: Actualizar Radar AleVic 4
 
 # El cron de GitHub solo acepta UTC: 13-21 UTC cubre las ventanas
 # de Nueva York en horario de verano Y de invierno.
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: radar-francotirador
+  group: radar-alevic-4
   cancel-in-progress: false
 
 jobs:
