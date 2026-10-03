@@ -1,7 +1,9 @@
 # ==========================================
-# METODO CARDONA - main.py v18-AleVic
+# METODO CARDONA - main.py v18-AleVic.1
 # MODO SIMULACION - NO SE ENVIAN ORDENES REALES
 # CLON GUIA: 4 empresas (F, NFLX, VALE, BAC)
+# v18-AleVic.1: robot auto-reparador de hojas
+# (renombra Hoja 1 a radar y crea INFORME_IA si falta)
 # Repo: Opciones-AleVic-APP
 # ==========================================
 
@@ -17,7 +19,7 @@ import time
 import requests
 from zoneinfo import ZoneInfo
 
-VERSION = 'v18-AleVic'
+VERSION = 'v18-AleVic.1'
 NY_TZ = ZoneInfo('America/New_York')
 
 SCOPES = [
@@ -92,6 +94,8 @@ SIM_HEADERS = [
     'Ganancia $', 'Ganancia %', 'Bid Actual', 'Max Bid', 'Estrategia',
     'Estado', 'Notas', 'VI', 'DTE', 'Break Even', 'Max Loss'
 ]
+
+IA_HEADERS = ['Fecha', 'Resumen', 'Lecciones', 'Recomendaciones']
 
 # ==========================================
 # REGISTRO DE ERRORES (sin secretos)
@@ -670,6 +674,29 @@ def leer_simulador(ws):
         registrar_error('leer_simulador', 'SIMULADOR', 'lectura', e)
         return []
 
+def asegurar_hojas(sh):
+    """v18-AleVic.1: garantiza las 3 hojas con nombres correctos en cada run."""
+    try:
+        ws0 = sh.sheet1
+        if ws0.title != 'radar':
+            ws0.update_title('radar')
+            print('Hoja principal renombrada a: radar')
+    except Exception as e:
+        registrar_error('asegurar_hojas', 'radar', 'renombrar hoja principal', e)
+    try:
+        abrir_simulador(sh)
+    except Exception as e:
+        registrar_error('asegurar_hojas', 'SIMULADOR', 'abrir/crear', e)
+    try:
+        sh.worksheet('INFORME_IA')
+    except Exception:
+        try:
+            ws_ia = sh.add_worksheet(title='INFORME_IA', rows="100", cols="10")
+            ws_ia.append_row(IA_HEADERS)
+            print('Hoja INFORME_IA creada por el robot')
+        except Exception as e:
+            registrar_error('asegurar_hojas', 'INFORME_IA', 'crear', e)
+
 def clave_fila(f):
     return (str(f.get('NOM', '')), str(f.get('Fecha', '')), str(f.get('Hora', '')),
             str(f.get('Simbolo', '')), str(f.get('Strike', '')), str(f.get('Call/Put', '')),
@@ -735,6 +762,7 @@ def main():
         raise
 
     sh0 = gc.open_by_key(SPREADSHEET_ID)
+    asegurar_hojas(sh0)
     ws_sim = abrir_simulador(sh0)
     filas = leer_simulador(ws_sim)
     pausadas = estrategias_pausadas(filas)
